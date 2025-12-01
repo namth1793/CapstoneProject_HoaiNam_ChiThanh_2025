@@ -1,0 +1,14 @@
+torch>=1.9.0
+torchvision>=0.10.0
+opencv-python>=4.5.0
+matplotlib>=3.3.0
+scikit-learn>=1.0.0
+pillow>=8.0.0
+numpy>=1.19.0
+insightface>=0.7.3
+onnxruntime>=1.14.0
+deepface>=0.0.79
+pandas>=1.5.0
+tf-keras>=2.0.0
+tensorflow>=2.20.0
+ultralytics>=8.0.0

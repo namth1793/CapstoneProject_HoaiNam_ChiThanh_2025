@@ -1,49 +1,78 @@
 #!/usr/bin/env python3
 """
-CLASSROOM BEHAVIOR DETECTION SYSTEM - GPU SUPPORT
-Tối ưu hóa để chạy trên GPU
+FACE RECOGNITION SYSTEM - INSIGHTFACE + DEEPFACE + YOLOv11-POSE + ATTENDANCE + REAL-TIME BACKEND
+GPU/CPU DUAL MODE - AUTO FALLBACK TO CPU
 """
 
 import os
 import cv2
 import numpy as np
 import pandas as pd
-import torch
+from sklearn.preprocessing import Normalizer
+from sklearn.svm import SVC
+from sklearn.metrics import accuracy_score
+import matplotlib.pyplot as plt
+import pickle
 import time
 import subprocess
 import sys
 from datetime import datetime
+import requests
+import json
 
-# ==================== KIỂM TRA VÀ CÀI ĐẶT GPU ====================
+# ==================== GPU CONFIGURATION ====================
 def setup_gpu():
-    """Thiết lập và kiểm tra GPU"""
-    print("🔍 Đang kiểm tra GPU...")
+    """Cấu hình và kiểm tra GPU chi tiết"""
+    print("🔍 Kiểm tra hệ thống GPU...")
     
-    # Kiểm tra xem GPU có khả dụng không
-    if torch.cuda.is_available():
-        gpu_count = torch.cuda.device_count()
-        current_device = torch.cuda.current_device()
-        gpu_name = torch.cuda.get_device_name(current_device)
-        
-        print(f"✅ GPU khả dụng: {gpu_name}")
-        print(f"📊 Số GPU: {gpu_count}")
-        print(f"🔧 Đang sử dụng GPU: {current_device}")
-        
-        # Thiết lập device mặc định
-        device = torch.device('cuda')
-        torch.cuda.set_device(current_device)
-        
-        # Hiển thị thông tin bộ nhớ GPU
-        gpu_memory = torch.cuda.get_device_properties(current_device).total_memory / (1024**3)  # GB
-        print(f"💾 Bộ nhớ GPU: {gpu_memory:.1f} GB")
-        
-        return device, True
-    else:
-        print("❌ GPU không khả dụng, sử dụng CPU")
-        return torch.device('cpu'), False
+    # Kiểm tra PyTorch CUDA
+    try:
+        import torch
+        if torch.cuda.is_available():
+            gpu_count = torch.cuda.device_count()
+            current_device = torch.cuda.current_device()
+            device_name = torch.cuda.get_device_name(current_device)
+            gpu_memory = torch.cuda.get_device_properties(current_device).total_memory / 1024**3
+            
+            print(f"✅ PyTorch GPU được hỗ trợ: {device_name}")
+            print(f"🎯 Số GPU: {gpu_count}")
+            print(f"💾 Bộ nhớ GPU: {gpu_memory:.1f} GB")
+            
+            # Thiết lập GPU mặc định
+            torch.cuda.set_device(current_device)
+            return True, 'cuda'
+        else:
+            print("❌ PyTorch không tìm thấy GPU")
+    except Exception as e:
+        print(f"❌ Lỗi kiểm tra PyTorch GPU: {e}")
+    
+    # Kiểm tra CUDA qua nvcc
+    try:
+        result = subprocess.run(['nvcc', '--version'], capture_output=True, text=True)
+        if result.returncode == 0:
+            print("✅ NVIDIA CUDA Compiler được cài đặt")
+            # Parse version từ output
+            for line in result.stdout.split('\n'):
+                if 'release' in line:
+                    print(f"📋 CUDA Version: {line}")
+        else:
+            print("❌ NVIDIA CUDA Compiler không khả dụng")
+    except:
+        print("❌ Không thể chạy nvcc - CUDA có thể chưa được cài đặt")
+    
+    # Kiểm tra DirectX (cho GPU AMD/Intel)
+    try:
+        import ctypes
+        dxgi = ctypes.windll.dxgi
+        print("✅ DirectX GPU khả dụng")
+    except:
+        print("❌ Không thể kiểm tra DirectX")
+    
+    print("🔧 Sử dụng CPU mode - Hệ thống vẫn hoạt động bình thường")
+    return False, 'cpu'
 
 def install_dependencies():
-    """Tự động cài đặt dependencies với hỗ trợ GPU"""
+    """Cài đặt dependencies với fallback an toàn"""
     packages = [
         "torch",
         "torchvision", 
@@ -52,68 +81,222 @@ def install_dependencies():
         "scikit-learn",
         "pillow",
         "numpy",
+        "insightface",
+        "deepface",
+        "pandas",
         "ultralytics",
-        "pandas"
+        "requests"
     ]
     
-    print("🔧 Kiểm tra và cài đặt dependencies...")
+    # Kiểm tra xem có nên dùng onnxruntime-gpu hay không
+    gpu_available, _ = setup_gpu()
+    if gpu_available:
+        packages.append("onnxruntime-gpu")
+        print("🎯 Sẽ cài đặt onnxruntime-gpu cho GPU")
+    else:
+        packages.append("onnxruntime")
+        print("🎯 Sẽ cài đặt onnxruntime thường cho CPU")
     
-    # Kiểm tra phiên bản PyTorch có hỗ trợ GPU không
-    try:
-        import torch
-        if not torch.cuda.is_available():
-            print("⚠️ PyTorch không tìm thấy GPU, kiểm tra driver CUDA")
-    except ImportError:
-        print("📥 PyTorch chưa được cài đặt")
+    print("🔧 Kiểm tra và cài đặt dependencies...")
     
     for package in packages:
         try:
             if package == "torch":
-                __import__("torch")
+                import torch
+                print(f"✅ torch {torch.__version__} đã được cài đặt")
             elif package == "torchvision":
-                __import__("torchvision")
+                import torchvision
+                print(f"✅ torchvision {torchvision.__version__} đã được cài đặt")
+            elif package == "insightface":
+                import insightface
+                print("✅ insightface đã được cài đặt")
+            elif package == "deepface":
+                import deepface
+                print("✅ deepface đã được cài đặt")
             elif package == "ultralytics":
-                __import__("ultralytics")
+                import ultralytics
+                print(f"✅ ultralytics {ultralytics.__version__} đã được cài đặt")
+            elif package == "onnxruntime-gpu":
+                try:
+                    import onnxruntime
+                    print("✅ onnxruntime đã được cài đặt")
+                    continue
+                except ImportError:
+                    pass
             else:
                 __import__(package.replace('-', '_'))
             print(f"✅ {package} đã được cài đặt")
         except ImportError:
             print(f"📥 Đang cài đặt {package}...")
-            subprocess.check_call([sys.executable, "-m", "pip", "install", package])
-            print(f"✅ Đã cài đặt {package}")
+            try:
+                # Thử cài đặt với user option để tránh lỗi permission
+                subprocess.check_call([sys.executable, "-m", "pip", "install", package, "--user"])
+                print(f"✅ Đã cài đặt {package} với --user option")
+            except subprocess.CalledProcessError:
+                try:
+                    # Thử cài đặt bình thường
+                    subprocess.check_call([sys.executable, "-m", "pip", "install", package])
+                    print(f"✅ Đã cài đặt {package}")
+                except subprocess.CalledProcessError as e:
+                    print(f"⚠️ Không thể cài đặt {package}: {e}")
+                    print("🚨 Tiếp tục với package khác...")
 
-# ==================== CLASSROOM BEHAVIOR DETECTION WITH GPU ====================
-class ClassroomBehaviorDetectorGPU:
-    def __init__(self):
-        self.pose_model = None
-        self.device = None
-        self.use_gpu = False
-        self.behavior_history = {}
+def check_system_capabilities():
+    """Kiểm tra khả năng hệ thống chi tiết"""
+    print("\n" + "="*50)
+    print("🔍 KIỂM TRA HỆ THỐNG CHI TIẾT")
+    print("="*50)
+    
+    # Kiểm tra Python
+    print(f"🐍 Python Version: {sys.version}")
+    
+    # Kiểm tra OpenCV
+    try:
+        import cv2
+        print(f"📷 OpenCV Version: {cv2.__version__}")
+    except ImportError:
+        print("❌ OpenCV chưa được cài đặt")
+    
+    # Kiểm tra PyTorch
+    try:
+        import torch
+        print(f"🔥 PyTorch Version: {torch.__version__}")
+        if torch.cuda.is_available():
+            print("🎯 PyTorch CUDA: SẴN SÀNG")
+            print(f"🔧 GPU Name: {torch.cuda.get_device_name(0)}")
+            print(f"💾 GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
+        else:
+            print("🎯 PyTorch CUDA: KHÔNG SẴN SÀNG")
+    except ImportError:
+        print("❌ PyTorch chưa được cài đặt")
+    
+    # Kiểm tra ONNX Runtime
+    try:
+        import onnxruntime as ort
+        providers = ort.get_available_providers()
+        print(f"📊 ONNX Runtime Providers: {providers}")
+    except ImportError:
+        print("❌ ONNX Runtime chưa được cài đặt")
+    
+    print("="*50)
+
+# ==================== BACKEND DATA SENDER ====================
+class BackendDataSender:
+    def __init__(self, base_url="http://localhost:8000"):
+        self.base_url = base_url
+        self.is_connected = False
+        self.last_sent_time = 0
+        self.send_interval = 1.0
+        self.test_connection()
+    
+    def test_connection(self):
+        """Kiểm tra kết nối đến backend"""
+        try:
+            response = requests.get(f"{self.base_url}/api/health", timeout=3)
+            if response.status_code == 200:
+                self.is_connected = True
+                print("✅ Đã kết nối đến backend thành công!")
+            else:
+                print(f"⚠️ Backend trả về mã lỗi: {response.status_code}")
+                self.is_connected = False
+        except Exception as e:
+            print(f"❌ Không thể kết nối đến backend: {str(e)}")
+            self.is_connected = False
+    
+    def can_send_realtime(self):
+        """Kiểm tra xem có thể gửi real-time data không"""
+        current_time = time.time()
+        if current_time - self.last_sent_time >= self.send_interval:
+            self.last_sent_time = current_time
+            return True
+        return False
+    
+    def send_realtime_data(self, student_data_list):
+        """Gửi dữ liệu real-time cho tất cả học sinh được phát hiện"""
+        if not self.is_connected or not self.can_send_realtime():
+            return False
         
+        try:
+            present_count = len([s for s in student_data_list if s.get('status') == 'present'])
+            total_count = len(student_data_list)
+            
+            emotion_count = {}
+            engagement_scores = []
+            
+            for student in student_data_list:
+                emotion = student.get('emotion', 'neutral')
+                emotion_count[emotion] = emotion_count.get(emotion, 0) + 1
+                engagement_scores.append(student.get('engagement', 0))
+            
+            avg_engagement = np.mean(engagement_scores) * 100 if engagement_scores else 75.0
+            dominant_emotion = max(emotion_count.items(), key=lambda x: x[1])[0] if emotion_count else 'neutral'
+            
+            data = {
+                "type": "live_update",
+                "timestamp": datetime.now().isoformat(),
+                "students": student_data_list,
+                "stats": {
+                    "total_students": total_count,
+                    "present_count": present_count,
+                    "absent_count": max(5 - present_count, 0),
+                    "attendance_rate": round((present_count / max(total_count, 1)) * 100, 1),
+                    "avg_engagement": round(avg_engagement, 1),
+                    "current_emotion": dominant_emotion
+                }
+            }
+            
+            response = requests.post(
+                f"{self.base_url}/api/realtime/update",
+                json=data,
+                timeout=2
+            )
+            
+            if response.status_code == 200:
+                print(f"📤 Real-time: {len(student_data_list)} students, {avg_engagement:.1f}% engagement")
+                return True
+            else:
+                try:
+                    ws_response = requests.post(
+                        f"{self.base_url}/api/websocket/broadcast",
+                        json=data,
+                        timeout=2
+                    )
+                    return ws_response.status_code == 200
+                except:
+                    return False
+                
+        except Exception as e:
+            return False
+
+# ==================== BEHAVIOR DETECTION ====================
+class BehaviorDetector:
+    def __init__(self, device='cpu'):
+        self.pose_model = None
+        self.device = device
+        self.initialize_pose_detector()
+    
     def initialize_pose_detector(self):
-        """Khởi tạo YOLOv11 pose detector với GPU"""
+        """Khởi tạo YOLOv11 pose detector"""
         try:
             from ultralytics import YOLO
             
-            # Thiết lập GPU
-            self.device, self.use_gpu = setup_gpu()
+            print("📥 Đang tải YOLOv11 pose model...")
+            self.pose_model = YOLO('yolo11n-pose.pt')
             
-            print("🚀 Đang khởi tạo YOLOv11 Pose detector với GPU...")
-            
-            # Load model với device specification
-            if self.use_gpu:
-                # Sử dụng GPU
-                self.pose_model = YOLO('yolo11n-pose.pt')
-                # Chuyển model sang GPU
-                self.pose_model.to(self.device)
-                print("✅ YOLOv11 Pose detector đã được tải lên GPU")
+            if self.device == 'cuda':
+                try:
+                    import torch
+                    if torch.cuda.is_available():
+                        self.pose_model.to('cuda')
+                        print("✅ YOLOv11 Pose detector đã sẵn sàng (GPU)")
+                    else:
+                        print("✅ YOLOv11 Pose detector đã sẵn sàng (CPU - Fallback)")
+                        self.device = 'cpu'
+                except:
+                    print("✅ YOLOv11 Pose detector đã sẵn sàng (CPU - Fallback)")
+                    self.device = 'cpu'
             else:
-                # Sử dụng CPU
-                self.pose_model = YOLO('yolo11n-pose.pt')
                 print("✅ YOLOv11 Pose detector đã sẵn sàng (CPU)")
-            
-            # Test inference để kiểm tra tốc độ
-            self._test_inference_speed()
             
             return True
             
@@ -121,64 +304,29 @@ class ClassroomBehaviorDetectorGPU:
             print(f"❌ Lỗi khởi tạo YOLOv11 Pose: {str(e)}")
             return False
     
-    def _test_inference_speed(self):
-        """Kiểm tra tốc độ inference"""
-        print("⏱️ Đang kiểm tra tốc độ inference...")
-        
-        # Tạo ảnh test
-        test_image = np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8)
-        
-        # Warm-up
-        for _ in range(3):
-            _ = self.pose_model(test_image, verbose=False)
-        
-        # Đo tốc độ
-        start_time = time.time()
-        for _ in range(10):
-            results = self.pose_model(test_image, verbose=False)
-        end_time = time.time()
-        
-        fps = 10 / (end_time - start_time)
-        device_type = "GPU" if self.use_gpu else "CPU"
-        print(f"🎯 Tốc độ inference ({device_type}): {fps:.1f} FPS")
-    
-    def detect_classroom_behaviors(self, image):
-        """Nhận diện hành vi học sinh với tối ưu GPU"""
+    def detect_behavior(self, image):
+        """Nhận diện hành vi từ pose estimation"""
         try:
-            # Run pose detection với cài đặt tối ưu cho GPU
-            if self.use_gpu:
-                # Sử dụng half precision (FP16) để tăng tốc độ trên GPU
-                results = self.pose_model(image, verbose=False, half=True)
-            else:
-                results = self.pose_model(image, verbose=False)
+            device = '0' if self.device == 'cuda' else 'cpu'
+            results = self.pose_model(image, verbose=False, device=device)
             
             behaviors = []
             
             for result in results:
                 if hasattr(result, 'keypoints') and result.keypoints is not None and len(result.keypoints) > 0:
                     for person_idx, keypoints in enumerate(result.keypoints.data):
-                        # Chuyển keypoints sang numpy (tự động xử lý device)
                         kpts = keypoints.cpu().numpy()
+                        behavior = self._analyze_pose_behavior(kpts)
                         
-                        # Phân tích hành vi lớp học
-                        behavior_info = self._analyze_classroom_behavior(kpts)
-                        
-                        # Lấy bounding box
                         bbox = None
                         if hasattr(result, 'boxes') and result.boxes is not None and len(result.boxes) > person_idx:
                             bbox = result.boxes[person_idx].xyxy[0].cpu().numpy()
                         
-                        # Gán ID cho mỗi người
-                        person_id = f"person_{person_idx}"
-                        
                         behaviors.append({
-                            'person_id': person_id,
-                            'behavior': behavior_info['behavior'],
-                            'behavior_score': behavior_info['score'],
+                            'behavior': behavior,
                             'keypoints': kpts,
                             'bbox': bbox,
-                            'person_idx': person_idx,
-                            'details': behavior_info['details']
+                            'person_idx': person_idx
                         })
             
             return behaviors
@@ -187,8 +335,8 @@ class ClassroomBehaviorDetectorGPU:
             print(f"❌ Lỗi nhận diện hành vi: {str(e)}")
             return []
     
-    def _analyze_classroom_behavior(self, keypoints):
-        """Phân tích hành vi học sinh trong lớp học"""
+    def _analyze_pose_behavior(self, keypoints):
+        """Phân tích hành vi dựa trên keypoints pose"""
         try:
             # Chỉ số keypoints theo COCO format
             LEFT_SHOULDER = 5
@@ -202,13 +350,11 @@ class ClassroomBehaviorDetectorGPU:
             LEFT_KNEE = 13
             RIGHT_KNEE = 14
             
-            # Lấy tọa độ keypoints
             def get_point(idx):
                 if keypoints[idx][2] > 0.3:
                     return keypoints[idx][:2]
                 return None
             
-            # Lấy các điểm quan trọng
             left_shoulder = get_point(LEFT_SHOULDER)
             right_shoulder = get_point(RIGHT_SHOULDER)
             left_elbow = get_point(LEFT_ELBOW)
@@ -220,226 +366,417 @@ class ClassroomBehaviorDetectorGPU:
             left_knee = get_point(LEFT_KNEE)
             right_knee = get_point(RIGHT_KNEE)
             
-            # Tính toán các chỉ số hành vi
-            behavior_scores = {
-                'ngoi_nghiêm_chỉnh': 0,
-                'giơ_tay_phát_biểu': 0,
-                'quay_sau_quay_truoc': 0,
-                'dung_len': 0,
-                'cum_khai': 0,
-                'viet_bai': 0,
-                'doc_sach': 0
-            }
+            behaviors = []
             
-            details = []
+            # Kiểm tra giơ tay
+            if left_wrist is not None and left_shoulder is not None:
+                if left_wrist[1] < left_shoulder[1]:
+                    behaviors.append("raising_hand")
+            if right_wrist is not None and right_shoulder is not None:
+                if right_wrist[1] < right_shoulder[1]:
+                    behaviors.append("raising_hand")
             
-            # 1. Kiểm tra tư thế ngồi
-            if (left_hip and right_hip and left_knee and right_knee):
+            # Kiểm tra đứng/ngồi
+            if (left_hip is not None and left_knee is not None and 
+                right_hip is not None and right_knee is not None):
                 hip_height = (left_hip[1] + right_hip[1]) / 2
                 knee_height = (left_knee[1] + right_knee[1]) / 2
-                sitting_ratio = abs(hip_height - knee_height)
-                
-                if 30 < sitting_ratio < 100:
-                    behavior_scores['ngoi_nghiêm_chỉnh'] += 0.8
-                    details.append("Ngồi nghiêm chỉnh")
-                elif sitting_ratio < 30:
-                    behavior_scores['dung_len'] += 0.9
-                    details.append("Đứng lên")
+                if abs(hip_height - knee_height) < 50:
+                    behaviors.append("standing")
+                else:
+                    behaviors.append("sitting")
             
-            # 2. Kiểm tra giơ tay phát biểu
-            if left_wrist and left_shoulder and left_wrist[1] < left_shoulder[1] - 20:
-                behavior_scores['giơ_tay_phát_biểu'] += 0.9
-                details.append("Giơ tay trái")
-            if right_wrist and right_shoulder and right_wrist[1] < right_shoulder[1] - 20:
-                behavior_scores['giơ_tay_phát_biểu'] += 0.9
-                details.append("Giơ tay phải")
+            # Kiểm tra vỗ tay
+            if left_wrist is not None and right_wrist is not None:
+                distance = np.sqrt(np.sum((left_wrist - right_wrist) ** 2))
+                if distance < 50:
+                    behaviors.append("clapping")
             
-            # 3. Kiểm tra quay người
-            if left_shoulder and right_shoulder:
-                shoulder_angle = abs(left_shoulder[0] - right_shoulder[0])
-                if shoulder_angle < 30:
-                    behavior_scores['quay_sau_quay_truoc'] += 0.7
-                    details.append("Quay người")
+            if not behaviors:
+                behaviors.append("normal")
             
-            # 4. Kiểm tra tư thế cúi đầu
-            if left_shoulder and right_shoulder and left_hip and right_hip:
-                upper_body_angle = abs((left_shoulder[1] + right_shoulder[1])/2 - (left_hip[1] + right_hip[1])/2)
-                if upper_body_angle > 50:
-                    behavior_scores['viet_bai'] += 0.6
-                    behavior_scores['doc_sach'] += 0.6
-                    details.append("Cúi người (viết/đọc)")
-            
-            # 5. Kiểm tra tư thế tay
-            if (left_wrist and right_wrist and left_elbow and right_elbow and
-                left_shoulder and right_shoulder):
-                avg_wrist_y = (left_wrist[1] + right_wrist[1]) / 2
-                avg_shoulder_y = (left_shoulder[1] + right_shoulder[1]) / 2
-                
-                if abs(avg_wrist_y - avg_shoulder_y) < 50:
-                    behavior_scores['cum_khai'] += 0.7
-                    details.append("Tay để trước ngực")
-            
-            # Xác định hành vi chính
-            main_behavior = max(behavior_scores, key=behavior_scores.get)
-            max_score = behavior_scores[main_behavior]
-            
-            if max_score < 0.5:
-                main_behavior = "ngoi_nghiêm_chỉnh"
-                max_score = 0.5
-                details = ["Tư thế bình thường"]
-            
-            return {
-                'behavior': main_behavior,
-                'score': max_score,
-                'details': details,
-                'all_scores': behavior_scores
-            }
+            return ", ".join(behaviors)
             
         except Exception as e:
             print(f"❌ Lỗi phân tích hành vi: {str(e)}")
-            return {
-                'behavior': "unknown",
-                'score': 0,
-                'details': ["Không xác định"],
-                'all_scores': {}
-            }
+            return "unknown"
 
-# ==================== ATTENDANCE & BEHAVIOR LOGGING ====================
-class ClassroomLogger:
-    def __init__(self, csv_file="classroom_behavior.csv"):
+# ==================== ATTENDANCE SYSTEM ====================
+class AttendanceSystem:
+    def __init__(self, csv_file="attendance.csv"):
         self.csv_file = csv_file
-        self.initialize_log_file()
+        self.backend_sender = BackendDataSender()
+        self.initialize_attendance_file()
     
-    def initialize_log_file(self):
-        """Khởi tạo file log hành vi"""
+    def initialize_attendance_file(self):
+        """Khởi tạo file điểm danh"""
         try:
             if not os.path.exists(self.csv_file):
                 df = pd.DataFrame(columns=[
-                    'Timestamp', 
-                    'Person_ID', 
-                    'Behavior', 
-                    'Behavior_Score',
-                    'Details',
-                    'Device'
+                    'Name', 'Date', 'Time', 'Emotion', 'Behavior', 'Confidence'
                 ])
                 df.to_csv(self.csv_file, index=False)
-                print(f"✅ Đã tạo file log hành vi: {self.csv_file}")
+                print(f"✅ Đã tạo file điểm danh: {self.csv_file}")
             else:
                 df = pd.read_csv(self.csv_file)
-                print(f"✅ File log đã tồn tại: {len(df)} records")
+                print(f"✅ File điểm danh đã tồn tại: {len(df)} records")
         except Exception as e:
-            print(f"❌ Lỗi khởi tạo file log: {str(e)}")
-            df = pd.DataFrame(columns=[
-                'Timestamp', 'Person_ID', 'Behavior', 'Behavior_Score', 'Details', 'Device'
-            ])
-            df.to_csv(self.csv_file, index=False)
+            print(f"❌ Lỗi khởi tạo file điểm danh: {str(e)}")
     
-    def log_behavior(self, person_id, behavior, score, details, device_type):
-        """Ghi log hành vi"""
+    def mark_attendance(self, name, emotion, behavior, confidence, bbox=None):
+        """Điểm danh vào file CSV và gửi lên backend"""
         try:
-            df = pd.read_csv(self.csv_file)
+            now = datetime.now()
+            date_str = now.strftime("%Y-%m-%d")
+            time_str = now.strftime("%H:%M:%S")
             
-            current_time = datetime.now()
-            five_seconds_ago = (current_time - pd.Timedelta(seconds=5)).strftime("%H:%M:%S")
+            student_id = f"SV{hash(name) % 10000:04d}"
             
-            recent_logs = df[
-                (df['Person_ID'] == person_id) & 
-                (df['Timestamp'] > five_seconds_ago)
+            # Gửi dữ liệu lên backend
+            if self.backend_sender.is_connected:
+                self.backend_sender.send_face_detection(
+                    student_id=student_id,
+                    student_name=name,
+                    emotion=emotion,
+                    confidence=confidence,
+                    bbox=bbox or {"x1": 0, "y1": 0, "x2": 100, "y2": 100}
+                )
+                
+                engagement_score = confidence * 100
+                self.backend_sender.send_behavior_data(
+                    student_id=student_id,
+                    student_name=name,
+                    behavior_type="engagement",
+                    score=engagement_score,
+                    details=json.dumps({"behavior": behavior, "emotion": emotion})
+                )
+                
+                self.backend_sender.mark_attendance(student_id, name, "present")
+            
+            # Lưu vào file local
+            try:
+                df = pd.read_csv(self.csv_file)
+            except:
+                df = pd.DataFrame(columns=[
+                    'Name', 'Date', 'Time', 'Emotion', 'Behavior', 'Confidence'
+                ])
+            
+            # Kiểm tra điểm danh trong vòng 2 phút
+            two_minutes_ago = (datetime.now() - pd.Timedelta(minutes=2)).strftime("%H:%M:%S")
+            recent_entries = df[
+                (df['Name'] == name) & 
+                (df['Date'] == date_str) & 
+                (df['Time'] > two_minutes_ago)
             ]
             
-            if len(recent_logs) == 0:
+            if len(recent_entries) == 0:
                 new_entry = {
-                    'Timestamp': current_time.strftime("%H:%M:%S"),
-                    'Person_ID': person_id,
+                    'Name': name,
+                    'Date': date_str,
+                    'Time': time_str,
+                    'Emotion': emotion,
                     'Behavior': behavior,
-                    'Behavior_Score': f"{score:.3f}",
-                    'Details': ", ".join(details),
-                    'Device': device_type
+                    'Confidence': f"{confidence:.4f}"
                 }
                 
                 df = pd.concat([df, pd.DataFrame([new_entry])], ignore_index=True)
                 df.to_csv(self.csv_file, index=False)
-                
-                if score > 0.7:
-                    behavior_vn = self._translate_behavior(behavior)
-                    print(f"📝 {person_id}: {behavior_vn} (Độ tin cậy: {score:.2f}) - {device_type}")
-                
+                print(f"✅ Đã điểm danh: {name} | 😊 {emotion} | 🎯 {behavior}")
                 return True
-            return False
+            else:
+                return False
                 
         except Exception as e:
-            print(f"❌ Lỗi ghi log: {str(e)}")
+            print(f"❌ Lỗi điểm danh: {str(e)}")
             return False
     
-    def _translate_behavior(self, behavior):
-        """Dịch hành vi sang tiếng Việt"""
-        translations = {
-            'ngoi_nghiêm_chỉnh': 'Ngồi nghiêm chỉnh',
-            'giơ_tay_phát_biểu': 'Giơ tay phát biểu',
-            'quay_sau_quay_truoc': 'Quay sau/quay trước',
-            'dung_len': 'Đứng lên',
-            'cum_khai': 'Chụm khai (tay để bàn)',
-            'viet_bai': 'Viết bài',
-            'doc_sach': 'Đọc sách',
-            'unknown': 'Không xác định'
-        }
-        return translations.get(behavior, behavior)
-    
-    def view_behavior_logs(self):
-        """Xem lịch sử hành vi"""
+    def view_attendance(self):
+        """Xem lịch sử điểm danh"""
         try:
             if not os.path.exists(self.csv_file):
-                print("📭 Chưa có file log hành vi")
+                print("📭 Chưa có file điểm danh")
                 return
                 
             df = pd.read_csv(self.csv_file)
             if len(df) > 0:
-                print("\n📊 LỊCH SỬ HÀNH VI LỚP HỌC:")
-                print("=" * 100)
+                print("\n📊 LỊCH SỬ ĐIỂM DANH:")
+                print("=" * 80)
                 for _, row in df.iterrows():
-                    behavior_vn = self._translate_behavior(row['Behavior'])
-                    print(f"🕒 {row['Timestamp']} | 👤 {row['Person_ID']} | 🎯 {behavior_vn} | 📈 {row['Behavior_Score']} | 💻 {row['Device']}")
-                print("=" * 100)
-                print(f"📈 Tổng số lượt ghi nhận: {len(df)}")
-                
-                # Thống kê theo device
-                device_stats = df['Device'].value_counts()
-                print(f"\n📱 Thống kê theo thiết bị:")
-                for device, count in device_stats.items():
-                    print(f"  {device}: {count} lượt")
-                    
+                    print(f"👤 {row['Name']} | 📅 {row['Date']} | 🕒 {row['Time']} | 😊 {row['Emotion']} | 🎯 {row['Behavior']}")
+                print("=" * 80)
+                print(f"📈 Tổng số lượt điểm danh: {len(df)}")
             else:
-                print("📭 Chưa có dữ liệu hành vi")
+                print("📭 Chưa có dữ liệu điểm danh")
         except Exception as e:
-            print(f"❌ Lỗi đọc file log: {str(e)}")
+            print(f"❌ Lỗi đọc file điểm danh: {str(e)}")
 
-# ==================== REAL-TIME CLASSROOM MONITORING WITH GPU ====================
-def real_time_classroom_monitoring_gpu():
-    """Giám sát hành vi lớp học real-time với GPU"""
-    detector = ClassroomBehaviorDetectorGPU()
-    logger = ClassroomLogger()
+# ==================== EMOTION DETECTION ====================
+class EmotionDetector:
+    def __init__(self):
+        self.emotion_model = None
     
-    if not detector.initialize_pose_detector():
+    def detect_emotion(self, face_image):
+        """Nhận diện cảm xúc từ khuôn mặt"""
+        try:
+            from deepface import DeepFace
+            
+            face_rgb = cv2.cvtColor(face_image, cv2.COLOR_BGR2RGB)
+            
+            analysis = DeepFace.analyze(
+                face_rgb, 
+                actions=['emotion'],
+                enforce_detection=False,
+                silent=True
+            )
+            
+            if isinstance(analysis, list):
+                analysis = analysis[0]
+            
+            emotion = analysis['dominant_emotion']
+            emotion_confidence = analysis['emotion'][emotion]
+            
+            return emotion, emotion_confidence
+            
+        except Exception as e:
+            print(f"❌ Lỗi nhận diện cảm xúc: {str(e)}")
+            return "unknown", 0.0
+
+# ==================== FACE RECOGNITION SYSTEM ====================
+class CompleteRecognitionSystem:
+    def __init__(self, model_name='buffalo_l', device='cpu'):
+        self.model_name = model_name
+        self.device = device
+        self.face_analyzer = None
+        self.l2_normalizer = Normalizer('l2')
+        self.emotion_detector = EmotionDetector()
+        self.behavior_detector = BehaviorDetector(device=device)
+        self.attendance_system = AttendanceSystem()
+        self.backend_sender = BackendDataSender()
+        
+    def initialize_system(self):
+        """Khởi tạo toàn bộ hệ thống"""
+        print("🚀 Đang khởi tạo hệ thống hoàn chỉnh...")
+        
+        # Khởi tạo InsightFace
+        try:
+            import insightface
+            from insightface.app import FaceAnalysis
+            
+            print("📥 Đang tải InsightFace model...")
+            self.face_analyzer = FaceAnalysis(name=self.model_name)
+            self.face_analyzer.prepare(ctx_id=0, det_size=(640, 640))
+            print("✅ InsightFace đã khởi tạo thành công!")
+            
+        except Exception as e:
+            print(f"❌ Lỗi khởi tạo InsightFace: {str(e)}")
+            return False
+        
+        # Khởi tạo Behavior Detector
+        if not self.behavior_detector.initialize_pose_detector():
+            print("⚠️ Không thể khởi tạo Behavior Detector")
+        
+        print("✅ Hệ thống hoàn chỉnh đã sẵn sàng!")
+        return True
+
+    def detect_faces(self, image):
+        """Phát hiện khuôn mặt với InsightFace"""
+        try:
+            image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            faces = self.face_analyzer.get(image_rgb)
+            
+            face_results = []
+            for face in faces:
+                bbox = face.bbox.astype(int)
+                x1, y1, x2, y2 = bbox
+                w = x2 - x1
+                h = y2 - y1
+                
+                face_roi = image[y1:y2, x1:x2]
+                if face_roi.size == 0:
+                    continue
+                
+                embedding = face.normed_embedding
+                
+                # Nhận diện cảm xúc
+                emotion, emotion_conf = self.emotion_detector.detect_emotion(face_roi)
+                
+                face_results.append({
+                    'face_image': face_roi,
+                    'bbox': (x1, y1, w, h),
+                    'embedding': embedding,
+                    'det_score': face.det_score,
+                    'landmarks': face.kps if hasattr(face, 'kps') else None,
+                    'emotion': emotion,
+                    'emotion_confidence': emotion_conf
+                })
+            
+            return face_results
+            
+        except Exception as e:
+            print(f"❌ Lỗi detect faces: {str(e)}")
+            return []
+
+    def extract_features(self, face_data):
+        """Trích xuất features từ khuôn mặt"""
+        try:
+            embedding = face_data['embedding']
+            embedding = embedding.reshape(1, -1)
+            features_normalized = self.l2_normalizer.transform(embedding)
+            return features_normalized[0]
+        except Exception as e:
+            print(f"❌ Lỗi extract features: {str(e)}")
+            return None
+
+    def train_face_recognition(self, database_path="database"):
+        """Train hệ thống nhận diện khuôn mặt"""
+        if not os.path.exists(database_path):
+            print(f"❌ Thư mục database không tồn tại: {database_path}")
+            return False
+        
+        database = {}
+        features_list = []
+        labels_list = []
+        
+        print("📁 Đang xử lý database...")
+        
+        persons = [p for p in os.listdir(database_path) if os.path.isdir(os.path.join(database_path, p))]
+        if len(persons) < 1:
+            print("❌ Không có người nào trong database!")
+            return False
+        
+        for person_name in persons:
+            person_path = os.path.join(database_path, person_name)
+            print(f"👤 Đang xử lý: {person_name}")
+            person_features = []
+            
+            image_files = [f for f in os.listdir(person_path) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+            
+            for image_file in image_files:
+                image_path = os.path.join(person_path, image_file)
+                image = cv2.imread(image_path)
+                if image is None:
+                    continue
+                
+                face_results = self.detect_faces(image)
+                for face_data in face_results:
+                    features = self.extract_features(face_data)
+                    if features is not None:
+                        person_features.append(features)
+                        features_list.append(features)
+                        labels_list.append(person_name)
+            
+            if person_features:
+                database[person_name] = person_features
+                print(f"  ➕ {person_name}: {len(person_features)} khuôn mặt")
+        
+        if len(features_list) == 0:
+            print("❌ Không có dữ liệu để train!")
+            return False
+        
+        print(f"\n📊 Thống kê database:")
+        print(f"👥 Số người: {len(database)}")
+        print(f"🖼️ Tổng khuôn mặt: {len(features_list)}")
+        
+        # Train SVM model
+        print("\n🎯 Đang train SVM model...")
+        self.svm_model = SVC(kernel='linear', probability=True, random_state=42)
+        self.svm_model.fit(features_list, labels_list)
+        
+        accuracy = accuracy_score(labels_list, self.svm_model.predict(features_list))
+        print(f"✅ Training hoàn tất! Accuracy: {accuracy:.4f}")
+        
+        # Lưu model
+        with open("face_recognition_model.pkl", 'wb') as f:
+            pickle.dump(self.svm_model, f)
+        
+        with open("face_database.pkl", 'wb') as f:
+            pickle.dump({
+                'database': database,
+                'features': features_list,
+                'labels': labels_list
+            }, f)
+        
+        print("💾 Đã lưu model và database")
+        return True
+
+    def load_trained_model(self):
+        """Load model đã train"""
+        try:
+            with open("face_recognition_model.pkl", 'rb') as f:
+                self.svm_model = pickle.load(f)
+            
+            with open("face_database.pkl", 'rb') as f:
+                db_info = pickle.load(f)
+            
+            print(f"✅ Đã load trained model - {len(self.svm_model.classes_)} classes")
+            return True
+            
+        except FileNotFoundError:
+            print("❌ Không tìm thấy file model. Vui lòng train model trước.")
+            return False
+
+    def recognize_face(self, face_data, threshold=0.6):
+        """Nhận diện khuôn mặt"""
+        if not hasattr(self, 'svm_model') or self.svm_model is None:
+            return "Unknown", 0.0
+        
+        features = self.extract_features(face_data)
+        if features is None:
+            return "Unknown", 0.0
+        
+        try:
+            probabilities = self.svm_model.predict_proba([features])[0]
+            max_prob = np.max(probabilities)
+            predicted_class = self.svm_model.classes_[np.argmax(probabilities)]
+            
+            if max_prob < threshold:
+                return "Unknown", max_prob
+            else:
+                return predicted_class, max_prob
+        except:
+            return "Unknown", 0.0
+
+# ==================== REAL-TIME RECOGNITION ====================
+def real_time_recognition():
+    """Chạy real-time recognition với optimization"""
+    # Kiểm tra và thiết lập GPU
+    gpu_available, device = setup_gpu()
+    
+    system = CompleteRecognitionSystem(device=device)
+    
+    if not system.initialize_system():
         print("❌ Không thể khởi tạo hệ thống")
         return
     
-    device_type = "GPU" if detector.use_gpu else "CPU"
+    model_loaded = system.load_trained_model()
+    if not model_loaded:
+        print("⚠️ Chạy ở chế độ chỉ detect cảm xúc và hành vi")
     
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
         print("❌ Không thể mở webcam!")
         return
     
+    # Cài đặt camera phù hợp với CPU
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    cap.set(cv2.CAP_PROP_FPS, 15)
     
-    print(f"🎓 HỆ THỐNG GIÁM SÁT LỚP HỌC - CHẠY TRÊN {device_type}")
-    print("📊 Đang nhận diện các hành vi...")
-    print("🎮 Nhấn 'q' để thoát, 's' để chụp ảnh, 'v' để xem log hành vi")
+    print("🎥 Hệ thống hoàn chỉnh đã bắt đầu!")
+    print(f"⚡ Chế độ: {'GPU ACCELERATED' if gpu_available else 'CPU OPTIMIZED'}")
+    print("📊 Tính năng: Nhận diện khuôn mặt + Cảm xúc + Hành vi + Điểm danh + Real-time Backend")
+    print("🎮 Nhấn 'q' để thoát, 's' để chụp ảnh, 'v' để xem điểm danh")
     
+    attendance_status = {}
     frame_count = 0
+    
+    # KHỞI TẠO BIẾN TRƯỚC
+    face_results = []
     behavior_results = []
-    fps_history = []
+    
+    # Biến để đo FPS
+    fps_counter = 0
+    fps_time = time.time()
     
     while True:
         ret, frame = cap.read()
@@ -447,115 +784,265 @@ def real_time_classroom_monitoring_gpu():
             break
         
         frame_count += 1
-        start_time = time.time()
-        
-        # Tăng tần suất detection khi dùng GPU
-        detection_interval = 2 if detector.use_gpu else 4
-        if frame_count % detection_interval == 0:
-            behavior_results = detector.detect_classroom_behaviors(frame)
-        
-        # Vẽ kết quả lên frame
-        for behavior in behavior_results:
-            if behavior['bbox'] is not None:
-                try:
-                    x1, y1, x2, y2 = behavior['bbox'].astype(int)
-                    
-                    # Màu sắc theo hành vi
-                    color_map = {
-                        'ngoi_nghiêm_chỉnh': (0, 255, 0),
-                        'giơ_tay_phát_biểu': (255, 255, 0),
-                        'viet_bai': (255, 165, 0),
-                        'doc_sach': (255, 165, 0),
-                        'cum_khai': (0, 255, 255),
-                        'quay_sau_quay_truoc': (0, 0, 255),
-                        'dung_len': (0, 0, 255),
-                        'unknown': (128, 128, 128)
-                    }
-                    
-                    behavior_type = behavior['behavior']
-                    color = color_map.get(behavior_type, (128, 128, 128))
-                    
-                    # Vẽ bounding box
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                    
-                    # Hiển thị hành vi
-                    behavior_vn = logger._translate_behavior(behavior_type)
-                    behavior_text = f"{behavior_vn} ({behavior['behavior_score']:.1f})"
-                    
-                    cv2.putText(frame, behavior_text, (x1, y1 - 10), 
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
-                    
-                    # Ghi log hành vi
-                    logger.log_behavior(
-                        behavior['person_id'], 
-                        behavior_type, 
-                        behavior['behavior_score'],
-                        behavior['details'],
-                        device_type
-                    )
-                    
-                except Exception as e:
-                    continue
+        fps_counter += 1
         
         # Tính FPS
-        end_time = time.time()
-        fps = 1.0 / (end_time - start_time)
-        fps_history.append(fps)
-        if len(fps_history) > 30:
-            fps_history.pop(0)
-        avg_fps = sum(fps_history) / len(fps_history)
+        current_time = time.time()
+        if current_time - fps_time >= 1.0:
+            fps = fps_counter / (current_time - fps_time)
+            fps_counter = 0
+            fps_time = current_time
+            fps_text = f"FPS: {fps:.1f}"
+        else:
+            fps_text = "FPS: calculating..."
         
-        # Hiển thị thông tin hiệu suất
-        active_students = len(behavior_results)
-        info_text = f"FPS: {avg_fps:.1f} | Học sinh: {active_students} | Device: {device_type}"
+        # Giảm tần suất detection để tăng performance trên CPU
+        detection_interval = 3  # CPU chậm hơn nên detection ít thường xuyên hơn
+        
+        if frame_count % detection_interval == 0:
+            face_results = system.detect_faces(frame)
+            behavior_results = system.behavior_detector.detect_behavior(frame)
+            
+            # GỬI DỮ LIỆU REAL-TIME
+            student_data_list = []
+            
+            for i, face_data in enumerate(face_results):
+                bbox = face_data['bbox']
+                x, y, w, h = bbox
+                emotion = face_data['emotion']
+                emotion_conf = face_data['emotion_confidence']
+                
+                if model_loaded:
+                    name, confidence = system.recognize_face(face_data)
+                else:
+                    name, confidence = "Unknown", 0.0
+                
+                # Tìm hành vi tương ứng
+                behavior = "normal"
+                for behav in behavior_results:
+                    if behav['bbox'] is not None:
+                        try:
+                            bx1, by1, bx2, by2 = behav['bbox'].astype(int)
+                            if (x < bx2 and x + w > bx1 and y < by2 and y + h > by1):
+                                behavior = behav['behavior']
+                                break
+                        except:
+                            continue
+                
+                # Tạo student data để gửi real-time
+                student_data = {
+                    'id': i + 1,
+                    'name': name,
+                    'status': 'present' if name != "Unknown" else 'unknown',
+                    'emotion': emotion,
+                    'engagement': confidence,
+                    'behavior': behavior,
+                    'bbox': {
+                        'x': int(x), 'y': int(y), 
+                        'width': int(w), 'height': int(h)
+                    },
+                    'confidence': confidence,
+                    'timestamp': datetime.now().isoformat()
+                }
+                
+                student_data_list.append(student_data)
+                
+                # Điểm danh nếu nhận diện được
+                if name != "Unknown" and confidence > 0.6:
+                    if name not in attendance_status:
+                        bbox_dict = {"x1": x, "y1": y, "x2": x+w, "y2": y+h}
+                        system.attendance_system.mark_attendance(
+                            name, emotion, behavior, confidence, bbox_dict
+                        )
+                        attendance_status[name] = True
+            
+            # GỬI REAL-TIME DATA
+            if student_data_list and system.backend_sender.is_connected:
+                system.backend_sender.send_realtime_data(student_data_list)
+        
+        # Hiển thị kết quả
+        for i, face_data in enumerate(face_results):
+            bbox = face_data['bbox']
+            x, y, w, h = bbox
+            emotion = face_data['emotion']
+            emotion_conf = face_data['emotion_confidence']
+            
+            if model_loaded:
+                name, confidence = system.recognize_face(face_data)
+                color = (0, 255, 0) if name != "Unknown" else (0, 0, 255)
+            else:
+                name, confidence = "Unknown", 0.0
+                color = (255, 255, 0)
+            
+            # Vẽ bounding box
+            cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
+            
+            # Tìm hành vi
+            behavior_text = "normal"
+            for behav in behavior_results:
+                if behav['bbox'] is not None:
+                    try:
+                        bx1, by1, bx2, by2 = behav['bbox'].astype(int)
+                        if (x < bx2 and x + w > bx1 and y < by2 and y + h > by1):
+                            behavior_text = behav['behavior']
+                            break
+                    except:
+                        continue
+            
+            # Hiển thị thông tin
+            info_text = f"{name} ({confidence:.2f})"
+            cv2.putText(frame, info_text, (x, y - 10), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+            
+            behavior_display = f"{behavior_text}"
+            cv2.putText(frame, behavior_display, (x, y - 35), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
+            
+            emotion_text = f"{emotion} ({emotion_conf:.1f})"
+            cv2.putText(frame, emotion_text, (x, y + h + 20), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+        
+        # Hiển thị trạng thái
+        backend_status = "🟢 REAL-TIME" if system.backend_sender.is_connected else "🔴 OFFLINE"
+        device_status = "⚡ GPU" if gpu_available else "💻 CPU"
+        info_text = f"Faces: {len(face_results)} | Backend: {backend_status} | Device: {device_status} | {fps_text}"
         cv2.putText(frame, info_text, (10, 30), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
         
-        # Hiển thị trạng thái GPU
-        if detector.use_gpu:
-            gpu_status = f"GPU: {torch.cuda.get_device_name(torch.cuda.current_device())}"
-            cv2.putText(frame, gpu_status, (10, 60), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-        
-        cv2.imshow(f'Classroom Behavior Monitoring - {device_type}', frame)
+        cv2.imshow('Real-time Face Recognition + Backend', frame)
         
         key = cv2.waitKey(1) & 0xFF
         if key == ord('q'):
             break
         elif key == ord('s'):
-            filename = f"classroom_{device_type}_{int(time.time())}.jpg"
+            filename = f"capture_{int(time.time())}.jpg"
             cv2.imwrite(filename, frame)
             print(f"✅ Đã lưu ảnh: {filename}")
         elif key == ord('v'):
-            logger.view_behavior_logs()
+            system.attendance_system.view_attendance()
     
     cap.release()
     cv2.destroyAllWindows()
-    print(f"👋 Đã thoát hệ thống giám sát ({device_type})!")
+    print("👋 Đã thoát!")
+
+# ==================== CÁC HÀM PHỤ TRỢ ====================
+def create_folder_structure():
+    """Tạo cấu trúc thư mục"""
+    folders = [
+        "database",
+        "database/person1",
+        "database/person2", 
+        "database/person3",
+        "test_images"
+    ]
+    
+    for folder in folders:
+        os.makedirs(folder, exist_ok=True)
+        print(f"✅ Đã tạo: {folder}/")
+    
+    print("\n📁 Cấu trúc thư mục đã được tạo!")
+
+def train_model():
+    """Train model từ database"""
+    gpu_available, device = setup_gpu()
+    system = CompleteRecognitionSystem(device=device)
+    
+    if not system.initialize_system():
+        return
+    
+    if not os.path.exists("database"):
+        os.makedirs("database")
+        print("📁 Đã tạo thư mục 'database'")
+        print("💡 Hãy thêm ảnh của bạn vào thư mục database/person1, database/person2, etc.")
+        return
+    
+    success = system.train_face_recognition()
+    if success:
+        print("🎉 Train model thành công!")
+    else:
+        print("❌ Train model thất bại!")
+
+def view_attendance():
+    """Xem lịch sử điểm danh"""
+    attendance_system = AttendanceSystem()
+    attendance_system.view_attendance()
+
+def test_backend_connection():
+    """Kiểm tra kết nối backend"""
+    sender = BackendDataSender()
+    if sender.is_connected:
+        print("✅ Kết nối backend: THÀNH CÔNG")
+    else:
+        print("❌ Kết nối backend: THẤT BẠI")
+
+def troubleshoot_gpu():
+    """Khắc phục sự cố GPU"""
+    print("\n" + "="*60)
+    print("🔧 KHẮC PHỤC SỰ CỐ GPU")
+    print("="*60)
+    
+    print("1. 📋 Kiểm tra card đồ họa:")
+    try:
+        import subprocess
+        result = subprocess.run(['nvidia-smi'], capture_output=True, text=True)
+        if result.returncode == 0:
+            print("✅ NVIDIA GPU được phát hiện")
+            print(result.stdout.split('\n')[0])  # Hiển thị dòng đầu tiên
+        else:
+            print("❌ Không tìm thấy NVIDIA GPU hoặc driver")
+    except:
+        print("❌ Không thể chạy nvidia-smi")
+    
+    print("\n2. 🔄 Cài đặt PyTorch với CUDA support:")
+    print("   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121")
+    
+    print("\n3. 💻 Kiểm tra hệ thống:")
+    print("   - Card đồ họa NVIDIA với CUDA support")
+    print("   - Driver NVIDIA mới nhất")
+    print("   - CUDA Toolkit được cài đặt")
+    print("   - PyTorch với CUDA support")
+    
+    print("\n4. ⚡ Tối ưu hóa CPU:")
+    print("   - Giảm độ phân giải camera")
+    print("   - Giảm tần suất detection")
+    print("   - Sử dụng model nhẹ hơn")
+    
+    print("="*60)
 
 # ==================== MAIN MENU ====================
 def main_menu():
     """Hiển thị menu chính"""
+    # Kiểm tra hệ thống chi tiết
+    check_system_capabilities()
+    
     while True:
         print("\n" + "="*70)
-        print("🎓 HỆ THỐNG GIÁM SÁT HÀNH VI LỚP HỌC - GPU SUPPORT")
+        print("🎭 COMPLETE RECOGNITION SYSTEM - FACE + EMOTION + BEHAVIOR + ATTENDANCE")
         print("="*70)
-        print("1. 🎥 Bắt đầu giám sát real-time (GPU/CPU tự động)")
-        print("2. 📊 Xem lịch sử hành vi")
-        print("3. 🔧 Kiểm tra thông tin GPU")
-        print("4. 🚪 Thoát")
+        print("1. 📁 Tạo cấu trúc thư mục")
+        print("2. 🎯 Train face recognition model")
+        print("3. 🎥 Real-time (Face + Emotion + Behavior + Attendance + Backend)")
+        print("4. 📊 Xem lịch sử điểm danh")
+        print("5. 🔗 Kiểm tra kết nối backend")
+        print("6. 🔧 Khắc phục sự cố GPU")
+        print("7. 🚪 Thoát")
         print("="*70)
         
-        choice = input("👉 Chọn chức năng (1-4): ").strip()
+        choice = input("👉 Chọn chức năng (1-7): ").strip()
         
         if choice == "1":
-            real_time_classroom_monitoring_gpu()
+            create_folder_structure()
         elif choice == "2":
-            logger = ClassroomLogger()
-            logger.view_behavior_logs()
+            train_model()
         elif choice == "3":
-            setup_gpu()
+            real_time_recognition()
         elif choice == "4":
+            view_attendance()
+        elif choice == "5":
+            test_backend_connection()
+        elif choice == "6":
+            troubleshoot_gpu()
+        elif choice == "7":
             print("👋 Tạm biệt!")
             break
         else:
@@ -565,10 +1052,10 @@ def main_menu():
 
 # ==================== MAIN ====================
 if __name__ == "__main__":
-    print("🔧 Đang kiểm tra hệ thống và GPU...")
+    print("🔧 Đang kiểm tra hệ thống...")
     install_dependencies()
     
-    print("\n🎓 KHỞI ĐỘNG HỆ THỐNG GIÁM SÁT LỚP HỌC VỚI GPU")
-    print("📊 Nhận diện hành vi học sinh với AI tối ưu hóa GPU")
+    print("\n🎯 Khởi động Hệ thống Nhận diện Hoàn chỉnh...")
+    print("📊 Tính năng: Nhận diện khuôn mặt + Cảm xúc + Hành vi + Điểm danh + Real-time Backend")
     
     main_menu()
